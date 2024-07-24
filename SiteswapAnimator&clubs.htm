@@ -1,0 +1,548 @@
+﻿<HTML>
+	<HEAD>
+		<TITLE>SiteswapEditor</TITLE>
+		<STYLE>
+			canvas {
+				border: 1px solid black;
+				margin: 0px 10px 0px 0px;
+			}
+
+			#myCanvas_2 {
+				border: none;
+			}
+
+			#ss_string {
+					width: 200px; /* Ширина поля в пикселах */
+			} 
+			#slct_HandMovement {
+				width: 200px; /* Ширина поля в пикселах */
+			}
+			#slct_Props {
+				width: 200px; /* Ширина поля в пикселах */
+			}
+			#wrap {
+				float: center;
+			} 
+
+			div{
+				float: left;
+				margin: 10px 10px 10px 10px;
+			}
+
+			h1 {
+				margin-left: 10px;
+			}
+		</STYLE>
+	</HEAD>
+	<SCRIPT language="JavaScript">
+		// переменные для доступа к панели рисования
+		var myCanvas; 
+		var context;
+		// переменные для старт/стопа анимации
+		var timerID = null;
+		var timerRunning = false;
+		// переменные для анимации
+		var fpb			= 50;	// frames per beat - число фреймов в бите
+		var acc			= 80/(fpb*fpb);	// ускорение свободного падения
+		var MaxHeight	= 600;	// максимальная высота подброса мяча
+		var PropRadius	= 10;	// радиус мяча
+		var HT			= 0.7;	// Holding Time - время удерживания мяча в руке(можно менять от 0 до 1)
+		var LPoint		= 0;	// Left Point - левая точка прилета мяча
+		var RPoint		= 150;	// Right Point - правая точка прилета мяча
+		var scope		= 60;	// расстояние от точки прилета до точки выбрасывания мяча/амплитуда движений руки
+		var freq		= 1000/fpb; // Frequency - частота обновления кадров
+		
+		var handMovement= 0;
+		var MaxThrow	= 0;	// максимальный по сайтсвопу бросок
+		var CurrentThrow= 0;	// текущий номер броска
+		var RightHand	= false;// задействованная при броске рука (правая/левая)
+
+		var NumOfProps	= 0;	// число мячей
+		var props	= [];		// массив мячей
+		var SSArray	= [];		// SiteSwap Array - массив сайтсвопа
+		
+		var propTypes = 0;
+		
+		//конструктор "руки"
+		var Hand = function () {
+			this.x = 0;				// x-координата руки
+			this.y = 0;				// y-координата руки
+			this.FrameNum = 0;		// номер фрейма руки от начала поимки мяча
+			this.clockWise = false; // признак - движение руки по/против часовой стрелки
+			this.xCenter = 0;		// x-координата центра "орбиты" руки
+		}
+
+		Hand.prototype.calcCoord = function() {	//МЕТОД - вычисление текущей координаты руки
+			var i; // положение руки в "градусах"
+			if( this.FrameNum>HT*fpb ) { //ЕСЛИ проход по верху
+				i = 180+180*(this.FrameNum-HT*fpb)/((2-HT)*fpb);//от 180 до 360
+			} else {	// проход по низу
+				i = this.FrameNum/(HT*fpb)*180;  //от 0 до 180
+			}
+
+			if(this.clockWise) { //ЕСЛИ движемся по часовой стрелке
+				i = -i;
+			} else {
+				i = -180+i;
+			}
+			
+			radGrad = Math.PI*i/180;
+			
+			this.y = Math.sin(radGrad)*20 //
+			this.x = this.xCenter+Math.cos(radGrad)*scope/2;			
+		}
+		
+		Hand.prototype.drawHand = function () {	// МЕТОД - отрисовка "руки"
+			context.lineWidth = 2;
+			context.strokeStyle = "rgb(0, 0, 0)";
+			context.fillStyle = "rgb(150, 150, 150)"; // серый цвет
+			// рисование "руки"
+			context.beginPath();
+			context.arc(this.x + 20, MaxHeight - (this.y + 50), 20, Math.PI*3/4,  Math.PI/4, true);
+			context.arc(this.x + 20, MaxHeight - (this.y + 40), 20, Math.PI/4,  Math.PI*3/4, false);
+			context.closePath();
+			context.stroke();
+			context.fill();
+		}
+
+		var RHand = new Hand();	//ОБЪЕКТ Right Hand - правая рука
+		var LHand = new Hand();	//ОБЪЕКТ Left Hand- левая рука
+
+		//рисование булавы
+
+		var new_club;
+
+		//конструктор "булавы"
+		var Club = function () {
+			this.x = 0;
+			this.y = 0;
+			this.angle = 0;
+		}
+
+		function drawEllipseTop( x, y, radius, angle){
+			var r_a;
+			var r_b;
+			for(var i = Math.PI/6; i<Math.PI; i+=30*Math.PI/180) {
+				r_a = radius*Math.cos(i);
+				r_b = Math.abs(radius*Math.sin(i)*Math.sin(angle));
+				context.lineTo(x + r_a,MaxHeight-(y+r_b));
+			}
+		}
+		
+		function drawEllipseDown( x, y, radius, angle){
+			var r_a;
+			var r_b;
+			for(var i = Math.PI*7/6; i<2*Math.PI; i+=30*Math.PI/180) {
+				r_a = radius*Math.cos(i);
+				r_b = -Math.abs(radius*Math.sin(i)*Math.sin(angle));
+				context.lineTo(x + r_a,MaxHeight-(y+r_b));
+			}
+		}
+		
+		function drawEllipse( x, y, radius, angle, tColor) {
+			context.beginPath();
+			context.moveTo(x + radius,MaxHeight-y);
+			drawEllipseTop( x, y, radius, angle);
+			drawEllipseDown( x, y, radius, angle);
+			context.closePath();
+			
+			context.fillStyle=tColor;
+			context.fill();	
+			context.stroke();
+		}
+		
+		function drawRectangle(x, y, width, height, angle, tColor){ //
+			context.beginPath();
+			context.moveTo(x+width/2, MaxHeight - (y-height/2));
+			drawEllipseTop( x, y+height/2, width/2, angle);
+			drawEllipseDown( x, y-height/2, width/2,angle);
+			context.closePath();
+			
+			context.fillStyle=tColor;
+			context.fill();	
+			context.stroke();
+		}
+		
+		function drawClub(x, y, angle) {
+			//context.clearRect( 0, 0, 200, MaxHeight);
+			context.lineWidth = 1;
+			context.strokeStyle = "rgb(0, 0, 0)";
+			
+			var clubLength = 40;
+			var radAngle = angle/180*Math.PI;
+			clubLength *= Math.cos(radAngle);
+			
+			if(angle<180){ //верх не виден
+				//draw body
+				drawRectangle( x, y+40+clubLength/4,10,Math.abs(clubLength/2), radAngle, "White");
+				//draw body_down
+				drawEllipse( x, y+40, 5, radAngle, "Red");
+				//draw handle
+				drawRectangle( x, y+40-clubLength/4,4,Math.abs(clubLength/2), radAngle, "White");
+				//draw hangle_down			
+				drawEllipse( x, y+40-clubLength/2, 2, radAngle, "Red");		
+			} else { //верх виден
+				//draw handle
+				drawRectangle( x, y+40-clubLength/4,4,Math.abs(clubLength/2), radAngle, "White");
+				//draw body
+				drawRectangle( x, y+40+clubLength/4,10,Math.abs(clubLength/2), radAngle, "White");
+				//draw body_top
+				drawEllipse( x, y+40+clubLength/2, 5, radAngle, "Red");
+			}
+		}		
+		
+		
+		
+		//конструктор мяча
+		var Prop = function () {
+			this.x			= 0;	// x - координата центра мяча
+			this.y			= 0;	// y - координата центра мяча
+			this.SSThrow	= 0;	// SiteSwap Throw - сайствопный бросок которым был брошен мяч
+			this.AirFrame	= 0;	// Кол-во фреймов которые мяч проведет в воздухе
+			this.FrameNum	= 0;	// Номер фрейма от момента выброса мяча
+			this.StartPos	= 0;	// Start Position - стартовая точка вылета мяча
+			this.EndPos		= 0;	// End Position - конечная точка прилета мяча
+		}
+
+		Prop.prototype.calcCoord = function() {	//МЕТОД - вычисление текущей координаты мяча
+			if( (this.FrameNum < this.AirFrame) && this.SSThrow!=2 ) {	//ЕСЛИ мяч еще в воздухе
+				// {
+					this.x = this.StartPos + (this.EndPos-this.StartPos)*this.FrameNum/this.AirFrame;	//вычисляем текущую x-координату
+					this.y = acc*(this.AirFrame-this.FrameNum)*this.FrameNum/2;//вычисляем текущую y-координату
+			} else { //ИНАЧЕ мяч в руке
+				//присваиваем мячу координаты руки в которую он прилетел
+				if(this.x > (RPoint-LPoint)/2) {
+					this.x = RHand.x;	
+					this.y = RHand.y;		
+				} else {
+					this.x = LHand.x;	
+					this.y = LHand.y;		
+				}
+			}
+		}
+		
+		
+		
+		Prop.prototype.drawProp = function() {  //МЕТОД - отрисовка мяча
+			switch( propTypes ) {
+				case 0:
+					context.beginPath();
+					context.lineWidth = 2;
+					context.strokeStyle = "rgb(0, 0, 255)";	//синий цвет
+					context.fillStyle = "White";
+					//рисуем окружность
+					context.arc(this.x+20, MaxHeight-(this.y+40), 10, 0, 2 * Math.PI, true);
+					context.stroke();
+					context.fill(); //stroke()
+					//впечатываем в окружность сайствопный бросок
+					context.font = "18px Arial";
+					context.fillStyle = "Black";
+					context.textBaseline = "middle";
+					context.textAlign = "center";
+					context.fillText((this.SSThrow)["toString"](36), this.x+20, MaxHeight-(this.y+40));
+				break;
+				case 1:
+					var angleClub;
+					if((this.FrameNum < this.AirFrame) && (this.SSThrow>2)){
+						//angleClub = (270 + (this.SSThrow-2)*360*this.FrameNum/this.AirFrame)%360;
+						angleClub = (270 + (this.SSThrow/2-0.5)*360*this.FrameNum/this.AirFrame)%360;
+					} else {
+						angleClub = 270;
+					}
+					//angleClub = 270;
+					drawClub(this.x+20, this.y, angleClub);			
+			}
+		}
+		
+		function initiateProps() {	//инициация мячей
+			var i = 0;		//вспомогательная переменная (если вкратце - отображает номер броска в сайтвопе)
+			var prop = 0;	//текущий номер мяча в массиве мячей
+			props.length = 0; //зачищаем массив мячей
+			// для начала - все мячи выкидываются с разницей в 1 такт
+			for(prop = 0; prop<NumOfProps; prop++) { 
+				props[prop] = new Prop();
+				props[prop].FrameNum = -fpb*prop;
+			}
+			//очень сильное колдунство - делается поправка на время выкидывания мячей
+			for(prop = 0; prop< props.length; prop++) { 
+				while(SSArray[i%SSArray.length]+prop < props.length) {
+					for( var k = prop+SSArray[i%SSArray.length]; k<props.length; k++) {
+						props[k].FrameNum -= fpb;
+					}
+					i++;
+					i %= SSArray.length;
+				}
+				i++;
+				i %= SSArray.length;
+			}
+		}
+		
+		function animateFrame() { //анимация паттерна
+			// вычисляем положение рук
+			RHand.calcCoord(); 
+			LHand.calcCoord();
+
+			var fading = 1 - document.getElementById("fading").value/100.0;
+			context.fillStyle = "rgba( 255, 255, 255," + fading +")";
+			context.fillRect( 0, 0, 200, MaxHeight);
+
+			//инициация/вычисление координаты/отрисовка мячей
+			for(var prop = 0; prop< props.length; prop++) {
+				if( props[prop].FrameNum >= 0) { //ЕСЛИ мяч брошен
+					if( props[prop].FrameNum == 0) { //ЕСЛИ начало нового такта
+						props[prop].SSThrow = SSArray[CurrentThrow]; //присваиваем текущий сайтсвопный бросок
+						props[prop].AirFrame = (props[prop].SSThrow-HT)*fpb; //вычисляем сколько фреймов мяч проведет в воздухе
+
+						switch (handMovement) {
+							case 0: //inside
+								if( RightHand ) {	//ЕСЛИ бросаем с правой руки
+									props[prop].StartPos = RPoint-scope;
+									props[prop].EndPos = (props[prop].SSThrow%2 == 0) ? (RPoint) : (LPoint);
+								} else {	//ИНАЧЕ бросаем с левой руки
+									props[prop].StartPos = LPoint+scope;
+									props[prop].EndPos = (props[prop].SSThrow%2 == 0) ? (LPoint) : (RPoint);
+								}
+								break;
+							case 1: //outside
+								if( RightHand ) {	//ЕСЛИ бросаем с правой руки
+									props[prop].StartPos = RPoint;
+									props[prop].EndPos = (props[prop].SSThrow%2 == 0) ? (RPoint-scope) : (LPoint+scope);
+								} else {	//ИНАЧЕ бросаем с левой руки
+									props[prop].StartPos = LPoint;
+									props[prop].EndPos = (props[prop].SSThrow%2 == 0) ? (LPoint+scope) : (RPoint-scope);
+								}
+								break;
+							case 2:	//halfshower-1
+								if( RightHand ) {	//ЕСЛИ бросаем с правой руки
+									props[prop].StartPos = RPoint;
+									props[prop].EndPos = (props[prop].SSThrow%2 == 0) ? (RPoint-scope) : (LPoint);
+								} else {	//ИНАЧЕ бросаем с левой руки
+									props[prop].StartPos = LPoint+scope;
+									props[prop].EndPos = (props[prop].SSThrow%2 == 0) ? (LPoint) : (RPoint-scope);
+								}
+								break;
+							case 3: //halfshower-2
+								if( RightHand ) {	//ЕСЛИ бросаем с правой руки
+									props[prop].StartPos = RPoint-scope;
+									props[prop].EndPos = (props[prop].SSThrow%2 == 0) ? (RPoint) : (LPoint+scope);
+								} else {	//ИНАЧЕ бросаем с левой руки
+									props[prop].StartPos = LPoint;
+									props[prop].EndPos = (props[prop].SSThrow%2 == 0) ? (LPoint+scope) : (RPoint);
+								}
+						}
+						props[prop].x = props[prop].StartPos;
+					}
+					props[prop].calcCoord();//вычисляем координаты мяча
+					props[prop].drawProp();//отрисовываем мяч
+				}
+				
+				props[prop].FrameNum++; // увеличиваем номер фрема мяча
+				if (props[prop].FrameNum == props[prop].SSThrow*fpb) { //по окончанию цикла - номер фрейма обнуляется
+					props[prop].FrameNum = 0;
+				}
+			}
+
+			//отрисовка рук
+			RHand.drawHand();
+			LHand.drawHand();
+			RHand.FrameNum++;
+			LHand.FrameNum++;
+
+			RHand.FrameNum %= 2*fpb;
+			LHand.FrameNum %= 2*fpb;
+			
+			if( (RHand.FrameNum  -  HT*fpb) % fpb == 0 ) {//props[0].FrameNum % fpb == 0) {	//ЕСЛИ началася новый такт
+				RightHand = !RightHand; //меняем руку
+			    CurrentThrow++; //увеличиваем текущий номер броска
+			    CurrentThrow %= SSArray.length;
+			}
+
+
+		}
+		
+		function checkSS( SSstr){  //проверка правильности сайтсвопа
+			var result = true;
+			var str= SSstr.toLowerCase(); // переводим строку в нижний регистр
+			SSArray.length = 0;
+
+			for(var i = 0; i< str.length; i++) { //переводим символы из строки в числа массива
+				SSArray[i] =str.charCodeAt(i);// parseInt(str[i]);
+				if(47 < SSArray[i] && SSArray[i] < 58) {
+					SSArray[i] -= 48;
+				} else if (96<SSArray[i] && SSArray[i]<123) {
+					SSArray[i] -= 87;
+				} else {
+					alert("Недопустимый символ! Используйте только цифры и латинские буквы.");
+					return false;
+				}
+			}
+			//вычисляем сумму всех элементов массива (для вычисления среднего арифметического)
+			var sum = 0;
+			for (var i = 0; i < SSArray.length; i++) {
+				sum += SSArray[i];
+			}
+			//проверка на среднее арифметическое
+			if( sum % SSArray.length == 0) {
+				var average = sum/SSArray.length;
+				NumOfProps = average;
+			} else {
+				alert("Неверное среднее арфиметическое!");
+				return false;
+			}
+			//проверка на возможность паттерна
+			var Landings = new Array(); //массив признака - попадал уже в данный такт мяч или нет
+			for (var i = 0; i < SSArray.length; i++) {
+				Landings[i] = 0;
+			}
+			var myCanvas_2 = document.getElementById("myCanvas_2");
+			var ctx = myCanvas_2.getContext("2d");
+			
+			ctx.clearRect( 0, 0, 200, 600); 
+
+			ctx.font = "20px Arial";
+			ctx.textBaseline = "middle";
+			ctx.textAlign = "center";
+			ctx.lineWidth = 2;
+			
+			var _color = 0;
+			var color_red = 0;
+			var color_green = 0;
+			var color_blue = 0;
+			
+			for (var i = 0; i < SSArray.length; i++) {
+				var LandPos = (SSArray[i] + i) % SSArray.length;
+				if (Landings[LandPos] == 1) { //Если мяч в данной позиции уже есть
+					result =  false;
+				}
+				Landings[LandPos] += 1;//выставляем признак что теперь в данном такте мяч есть
+				
+				_color++;
+				
+				color_red = (_color & 1)*255;
+				color_green = (_color & 2)*255;
+				color_blue = (_color & 4)*255;
+				
+				ctx.fillStyle  = "rgb("+ color_red +", "+ color_green +", " + color_blue +")";
+				ctx.strokeStyle = "Black";
+				
+				ctx.strokeText(SSArray[i], 20, i*30+20);
+				ctx.fillText(SSArray[i], 20, i*30+20);
+				ctx.beginPath();
+				ctx.arc(Landings[LandPos]*23+20, LandPos*30+20, 8, 0, 2 * Math.PI, true);
+				ctx.fill();	
+				ctx.stroke();
+			}
+
+			if(! result) {
+				alert("Сайтствоп не верен!");//значит сайтсвоп неверен
+			}
+			return result;
+		}
+		
+		function startAnimation(ss_string) { //запуск анимации
+			stopAnimation(); //убеждаемся что анимация остановлена
+			if(checkSS(ss_string)) { //проверяемя сайтсвоп на правильность
+				myCanvas = document.getElementById("myCanvas"); //получаем доступ к "панели рисования"
+				context = myCanvas.getContext("2d"); //получаем доступ к контексту
+				
+				CurrentThrow = 0;
+				//инициализируем руки
+				RHand.FrameNum = HT*fpb; //двигается первой
+				LHand.FrameNum = (1+HT)*fpb; //двигается следом за правой
+
+				propTypes = document.getElementById("slct_Props").options.selectedIndex;
+				handMovement = document.getElementById("slct_HandMovement").options.selectedIndex;
+				switch(handMovement) {
+					case 0: //inside
+						//правая:
+						RHand.clockWise = true;//по часовой стрелке
+						RHand.xCenter = RPoint-scope/2;
+						//левая:
+						LHand.clockWise = false;//против часовой стрелки
+						LHand.xCenter = LPoint+scope/2;
+						break;
+					case 1: //outside
+						//правая:
+						RHand.clockWise = false;//по часовой стрелке
+						RHand.xCenter = RPoint-scope/2;
+						//левая:
+						LHand.clockWise = true;//против часовой стрелки
+						LHand.xCenter = LPoint+scope/2;
+						break;
+					case 2: //halfshower - против часовой стрелке
+						//правая:
+						RHand.clockWise = false;//по часовой стрелке
+						RHand.xCenter = RPoint-scope/2;
+						//левая:
+						LHand.clockWise = false;//против часовой стрелки
+						LHand.xCenter = LPoint+scope/2;
+						break;
+					case 3:	//halfshower - по часовой стрелки
+						//правая:
+						RHand.clockWise = true;//по часовой стрелке
+						RHand.xCenter = RPoint-scope/2;
+						//левая:
+						LHand.clockWise = true;//против часовой стрелки
+						LHand.xCenter = LPoint+scope/2;
+				}
+
+				RightHand = true;	//первый бросок с правой руки
+				initiateProps(); //инициация мячей
+				
+				MaxThrow = 0;
+				for (var i = 0; i < SSArray.length; i++) {
+					if(SSArray[i] > MaxThrow) {
+						MaxThrow = SSArray[i];					
+					}
+				}
+
+				if(MaxThrow > 8) {
+					acc = 8 * (MaxHeight-40-10) / ((fpb*(MaxThrow-HT)) * (fpb*(MaxThrow-HT)));	
+				} else {
+					acc = 80/(fpb*fpb);
+				}
+				timerID = setInterval(animateFrame, freq); //запускаем анимацию
+				timerRunning = true; //выставляем признак что анимация запущена
+			}
+		}
+
+		function stopAnimation() {
+			if (timerRunning) {	//ЕСЛИ анимация запущена
+				context.clearRect( 0, 0, 200, MaxHeight);
+				clearInterval(timerID);	//останавливаем анимацию
+				timerRunning = false;	//снимаем признак запуска анимации   <INPUT id="fading" type="checkbox">
+			}
+
+
+		}
+	
+	</SCRIPT>
+	<BODY >
+		<DIV id="wrap">
+			<H1>Siteswap animator</H1>
+			<DIV>
+				Введите сайтсвоп:<br>
+				<INPUT id="ss_string" type="text" onkeydown="if(event.keyCode==13){startAnimation(ss_string.value);}"></TEXT><br>
+				Выберите движение рук: <br>
+				<SELECT id="slct_HandMovement">
+					<OPTION selected>Внутренние броски (inside)</OPTION>
+					<OPTION>Внешние броски (outside)</OPTION>
+					<OPTION>Полукаскад против часовой стрелки (halfshower counter-clockwise)</OPTION>
+					<OPTION>Полукаскад по часовой стрелке (halfshower clockwise)</OPTION>
+				</SELECT><br>
+				<SELECT id="slct_Props">
+					<OPTION selected>мячи</OPTION>
+					<OPTION>"булавы"</OPTION>
+				</SELECT><br>
+				Шлейф 
+				<input  id="fading" type="range" min="0" max="100" step="1" value="50"> <br>
+				<BUTTON id="btn1" onclick="startAnimation(ss_string.value)" >Запуск!</BUTTON>
+				<BUTTON id="btn2" onclick="stopAnimation()" >Стоп</BUTTON><br>
+				<CANVAS id="myCanvas_2" width = "200" height="600">
+			</DIV>
+			<DIV>
+					<CANVAS id="myCanvas" width = "200" height="600"></CANVAS>
+			</DIV>
+		</DIV>
+	</BODY>
+</HTML>
